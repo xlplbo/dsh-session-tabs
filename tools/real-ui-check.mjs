@@ -157,6 +157,7 @@ async function main() {
     if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text || 'evaluate 抛错');
     return result.result.value;
   };
+  const reloadPlugin=async()=>{await cdp.send('Page.reload');await sleep(WAIT);};
   if(process.argv.includes('--edge-ui-check')){
     const proof={};
     const ensure=(ok,label)=>{if(!ok)throw Error(label);console.log('  ✓ '+label);};
@@ -172,18 +173,15 @@ async function main() {
       await evaluate(`(()=>{const b=document.querySelector('button[aria-label="打开侧边栏"]');if(b)b.click();})()`);await sleep(200);
       ensure(await evaluate(`(()=>{const row=[...document.querySelectorAll('[data-row-key^="session:"]')].find(e=>e.textContent.includes('TAB-A 并发隔离验证')&&!e.textContent.includes('(1)'));if(!row)return false;row.click();return true;})()`),'使用合成会话验收底部工作区入口');await sleep(350);
     }
-    ensure(await evaluate('!!document.querySelector("[data-dsst-mode] svg rect")'),'标签窗口图标已在真实左栏渲染');
-    if(!(await evaluate('window.__dshSessionTabs.snapshot().enabled')))await clickVisible('[data-dsst-mode]');
-    await clickVisible('[data-dsst-mode]');
-    ensure(await evaluate('document.querySelector("[data-dsh-session-tabs]").hidden&&!document.querySelector("[data-dsh-session-tabs-native-hidden]")'),'新图标切回原生视图，原生入口恢复');
+    ensure(await evaluate('!!window.__dshSessionTabs&&!document.querySelector("[data-dsh-session-tabs]").hidden&&!document.querySelector("[data-dsst-mode]")'),'插件启用后直接显示标签，左栏没有额外视图切换按钮');
+    await evaluate('window.__dshSessionTabs.dispose()');
+    ensure(await evaluate('!document.querySelector("[data-dsh-session-tabs]")&&!document.querySelector("[data-dsh-session-tabs-native-hidden]")'),'插件清理后恢复原生视图与入口');
     if(process.argv.includes('--handoff-ui-check')){
       if(await evaluate('document.querySelector("[data-dsh-bottom-toggle]")?.getAttribute("aria-pressed")==="true"'))await clickVisible('[data-dsh-bottom-toggle]');
       proof.nativeBottom=await evaluate(`(()=>{const b=[...document.querySelectorAll('[data-dsh-bottom-toggle]')].find(e=>!e.closest('[hidden]')&&!e.closest('[aria-hidden="true"]'));if(!b)return null;const r=b.getBoundingClientRect(),s=b.querySelector('svg').getBoundingClientRect();return {width:r.width,height:r.height,iconWidth:s.width,iconHeight:s.height};})()`);
     }
-    await clickVisible('[data-dsst-mode]');
-    const modeReturn=await evaluate('({state:window.__dshSessionTabs.snapshot(),hidden:document.querySelector("[data-dsh-session-tabs]").hidden,label:document.querySelector("[data-dsst-mode]").getAttribute("aria-label")})');
-    if(modeReturn.hidden){const shot=await cdp.send('Page.captureScreenshot',{format:'png'});mkdirSync(dirname(OUT),{recursive:true});writeFileSync(OUT.replace(/\.png$/,'-mode-failure.png'),Buffer.from(shot.data,'base64'));console.log(JSON.stringify(modeReturn));}
-    ensure(!modeReturn.hidden,'新图标恢复标签视图');
+    await reloadPlugin();
+    ensure(await evaluate('!!window.__dshSessionTabs&&!document.querySelector("[data-dsh-session-tabs]").hidden&&!document.querySelector("[data-dsst-mode]")'),'重新加载已启用插件后直接恢复标签视图');
     const geometry=selector=>evaluate(`(()=>{const b=[...document.querySelectorAll(${JSON.stringify(selector)})].find(e=>{const r=e.getBoundingClientRect();return !e.hidden&&getComputedStyle(e).visibility!=='hidden'&&r.width>0&&r.left>=0&&r.right<=innerWidth+1;});if(!b)return null;const r=b.getBoundingClientRect(),svg=b.querySelector('svg').getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,iconWidth:svg.width,iconHeight:svg.height,rightGap:innerWidth-r.right};})()`);
     if(!(await geometry('[data-dsst-action=right]')))await clickVisible('[data-sidebar-right-toggle]');
     proof.collapsed=await geometry('[data-dsst-action=right]');ensure(!!proof.collapsed,'关闭右栏时有一个顶部打开入口');
@@ -270,11 +268,12 @@ async function main() {
       const after=await evaluate(`document.querySelector(${JSON.stringify(selector)})?.getAttribute('aria-pressed')??null`);
       ensure(after!==before,'顶部入口转发原生面板：'+kind);await click(selector);await sleep(450);proof.panels[kind]='toggled and restored';
     }
-    await evaluate('window.__dshSessionTabs.enable(false)');
-    ensure(await evaluate('document.querySelector("[data-dsh-session-tabs]").hidden&&!document.querySelector("[data-dsh-session-tabs-native-hidden]")'),'切回原生视图恢复原生面板入口');
-    await evaluate('window.__dshSessionTabs.enable(true)');
+    await evaluate('window.__dshSessionTabs.dispose()');
+    ensure(await evaluate('!document.querySelector("[data-dsh-session-tabs]")&&!document.querySelector("[data-dsh-session-tabs-native-hidden]")'),'插件清理后恢复原生面板入口');
     ensure(await evaluate('(()=>{const n=window.__tabsUiNodes;return !!n.left&&!!n.right&&!!n.main&&n.left===document.querySelector("[data-slot=sidebar]")&&n.right===document.querySelector("[data-slot=rightbar]")&&n.main===document.querySelector("[data-slot=main]");})()'),'左右侧栏及主视图节点保留');
     await evaluate('delete window.__tabsUiNodes');
+    await reloadPlugin();
+    ensure(await evaluate('!!window.__dshSessionTabs&&!document.querySelector("[data-dsh-session-tabs]").hidden&&!document.querySelector("[data-dsst-mode]")'),'重新加载插件直接显示标签且没有额外切换按钮');
     await cdp.send('Input.dispatchMouseEvent',{type:'mouseMoved',x:900,y:500});
     writeFileSync(OUT.replace(/\.png$/, '.json'),JSON.stringify(proof,null,2)+'\n');
   }

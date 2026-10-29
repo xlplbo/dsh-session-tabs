@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Remove the sidebar Native view / Show session tabs button and the separate internal enabled preference. Enabling the plugin applies the strip immediately; disabling or uninstalling it restores native controls and layout.
+- Ignore legacy hidden-tab preferences while preserving saved tab identities, order, and active session. Cover repeated host lifecycle cleanup/re-application and update the real-UI helper for the new behavior.
+
 ## 0.1.6 — 2026-10-15
 
 - Fix a renderer-freezing MutationObserver feedback loop when a global page such as the plugin manager unmounts the chat view.

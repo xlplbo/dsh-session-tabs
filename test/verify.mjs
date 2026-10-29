@@ -17,17 +17,18 @@ function load(extra={}){
   const window=extra.window||{};window.__ModuleLoader__={load(r){registration=r;}};
   const sandbox={window,console,setTimeout,clearTimeout,Map,Set,Promise,...extra};sandbox.window=window;
   vm.runInNewContext(source,sandbox,{filename:'client.js'});
-  return {registration,plugin:registration.factory(id=>{assert.equal(id,'react');return {createElement(){},useState(){return [0,()=>{}];},useEffect(){}};}),sandbox,window};
+  return {registration,plugin:registration.factory(id=>assert.fail('Unexpected client import: '+id)),sandbox,window};
 }
 function fixture(opts={}){
   const {plugin}=load();
   const list=new Observable({phase:opts.phase||'ready',ids:['a','b','c'],byId:{a:{id:'a',displayTitle:'A',blank:false,running:false,retainedBy:{mainView:1}},b:{id:'b',displayTitle:'B',blank:false,running:false,retainedBy:{}},c:{id:'c',displayTitle:'C',blank:false,running:false,retainedBy:{}}}});
   const status=new Observable(new Map()),workspaces=new Observable({items:[],archivedSessionIds:[]}),panel=new Observable({activePanelId:null});
-  const calls=[],refs=[],values=new Map();if(opts.raw)values.set(plugin.storageKey,opts.raw);
+  const calls=[],refs=[],events=new Map(),values=new Map();if(opts.raw)values.set(plugin.storageKey,opts.raw);
   const storage={getItem:k=>values.get(k)||null,setItem:(k,v)=>{values.set(k,v);}};
   const services={sessions:{list,retain(id,options){
     calls.push(['retain',id,options.source]);
-    const r={id,released:false,ready:opts.rejectReady?Promise.reject(new Error('open failed')):Promise.resolve(),release(){if(r.released)return;r.released=true;const row=list.value.byId[id];if(row){delete row.retainedBy[options.source];list.emit();}}};refs.push(r);
+    if(!events.has(id))events.set(id,new Observable({entries:[],change:{kind:'replace',entries:[]}}));
+    const r={id,binding:{eventSource:events.get(id)},released:false,ready:opts.rejectReady?Promise.reject(new Error('open failed')):Promise.resolve(),release(){if(r.released)return;r.released=true;const row=list.value.byId[id];if(row){delete row.retainedBy[options.source];list.emit();}}};refs.push(r);
     list.value.byId[id].retainedBy[options.source]=1;list.emit();return r;
   }},uiSession:{sessionStatus:status},workspaces:{list:workspaces},layout:{panelInfo:panel},uiWorkspace:{
     openSession(id){if(opts.failOpen)throw new Error('navigation failure');calls.push(['open',id]);Object.values(list.value.byId).forEach(row=>delete row.retainedBy.mainView);list.value.byId[id].retainedBy.mainView=1;list.emit();},
@@ -36,7 +37,7 @@ function fixture(opts={}){
   // The service guard rejects undeclared injection, unlike a permissive plain ctx.
   const ctx=new Proxy({}, {get(_,key){assert.ok(plugin.inject.includes(key),'undeclared service '+String(key));return services[key];}});
   const controller=plugin.createController(ctx,{storage,lang:()=>opts.lang||'en'});
-  return {plugin,ctx,services,controller,list,status,workspaces,panel,calls,refs,storage,values};
+  return {plugin,ctx,services,controller,list,status,workspaces,panel,calls,refs,events,storage,values};
 }
 test('published module shape, lazy import, declared services and metadata',()=>{
   const r=load();assert.equal(r.registration.id,pkg.name);assert.equal(typeof r.plugin.apply,'function');assert.equal(r.plugin.default,undefined);assert.deepEqual(Object.keys(r.window),['__ModuleLoader__']);
@@ -44,7 +45,7 @@ test('published module shape, lazy import, declared services and metadata',()=>{
   assert.equal(pkg.dsh.client.platform,'web');
 });
 test('parse rejects malformed, future and unsafe data; de-duplicates and bounds IDs',()=>{
-  const {plugin}=load();assert.deepEqual(plain(plugin.parse('{')), {version:1,enabled:true,ids:[],active:null});
+  const {plugin}=load();assert.deepEqual(plain(plugin.parse('{')), {version:1,ids:[],active:null});
   assert.equal(plugin.parse('{"version":2,"ids":["x"]}').ids.length,0);
   const state=plugin.parse({version:1,ids:['a','a','',3,null,'\u0000',...Array.from({length:250},(_,i)=>'s'+i)],active:'a'});
   assert.equal(state.ids.length,200);assert.equal(state.ids[0],'a');assert.equal(state.active,'a');assert.deepEqual(plain(plugin.parse(plugin.serialize(state))),plain(state));
@@ -104,9 +105,9 @@ test('cross-window storage updates never change native current session',()=>{
   const f=fixture();f.controller.external('{"version":1,"enabled":true,"ids":["b","a"],"active":"b"}');
   assert.equal(f.controller.snapshot().active,'a');assert.equal(f.calls.some(c=>c[0]==='open'),false);assert.deepEqual(plain(f.controller.snapshot().ids),['b','a']);f.controller.dispose();
 });
-test('native view preserves draft ownership, survives private storage errors, and restores',()=>{
-  const f=fixture();f.storage.setItem=()=>{throw Error('quota');};f.controller.setEnabled(false);assert.equal(f.controller.snapshot().enabled,false);assert.equal(f.refs[0].released,false);
-  f.controller.setEnabled(true);assert.equal(f.controller.snapshot().enabled,true);assert.ok(f.refs.some(r=>!r.released));f.controller.dispose();
+test('private storage failures preserve native ownership and do not prevent disposal',()=>{
+  const f=fixture();f.storage.setItem=()=>{throw Error('quota');};f.controller.open('b');assert.equal(f.refs[0].released,false);
+  assert.equal(f.list.value.byId.b.retainedBy.mainView,1);assert.doesNotThrow(()=>f.controller.dispose());assert.ok(f.refs.every(r=>r.released));
 });
 test('ready or navigation failure degrades to a notice without stopping native UI',async()=>{
   const f=fixture({rejectReady:true,failOpen:true});await Promise.resolve();assert.equal(f.controller.snapshot().notice,'Session unavailable');
@@ -129,7 +130,7 @@ function mounted(setup){const f=fixture();f.controller.dispose();const dom=domFi
 test('actual apply mounts only the center and leaves both native sidebar nodes intact',()=>{
   const f=mounted();assert.equal(f.dom.center.firstChild.getAttribute('data-dsh-session-tabs'),'');assert.equal(f.dom.native.getAttribute('data-dsh-session-tabs-main'),'');
   assert.equal(f.dom.left.textContent,'native left');assert.equal(f.dom.right.textContent,'native right');assert.deepEqual(f.dom.left.attrs,{'data-slot':'sidebar'});assert.deepEqual(f.dom.right.attrs,{'data-slot':'rightbar'});
-  assert.equal(f.ctx.registrations[0].meta.name,'sidebar.footer.action');assert.equal(f.dom.doc.querySelectorAll('[data-dsh-session-tabs]').length,1);f.ctx.dispose();
+  assert.equal(f.ctx.registrations.length,0);assert.equal(f.dom.doc.querySelectorAll('[data-dsh-session-tabs]').length,1);f.ctx.dispose();
 });
 test('actual apply is idempotent and dispose removes DOM, styles, listeners, observers and refs',()=>{
   const f=mounted();f.plugin.apply(f.ctx);assert.equal(f.ctx.cleanups.length,1);f.ctx.dispose();f.dom.flush();
@@ -137,10 +138,38 @@ test('actual apply is idempotent and dispose removes DOM, styles, listeners, obs
   assert.equal(f.dom.center.hasAttribute('data-dsh-session-tabs-column'),false);assert.equal(f.dom.native.hasAttribute('data-dsh-session-tabs-main'),false);assert.equal(f.window.__dshSessionTabs,undefined);
   assert.equal(f.ctx.registrations.length,0);assert.ok(f.dom.observers.every(o=>o.stopped));assert.equal(f.dom.window.listeners.get('storage').size,0);assert.equal(f.dom.doc.listeners.get('pointerdown')?.size||0,0);assert.equal(f.list.listeners.size,0);
 });
-test('native mode and global panels restore original center sizing and hide only the strip',()=>{
-  const f=mounted();f.window.__dshSessionTabs.enable(false);f.dom.flush();assert.equal(f.dom.center.firstChild.hidden,true);assert.equal(f.dom.native.hasAttribute('data-dsh-session-tabs-main'),false);
-  f.window.__dshSessionTabs.enable(true);f.panel.value.activePanelId='settings';f.panel.emit();f.dom.flush();assert.equal(f.dom.center.firstChild.hidden,true);
-  f.panel.value.activePanelId=null;f.panel.emit();f.dom.flush();assert.equal(f.dom.center.firstChild.hidden,false);f.ctx.dispose();
+test('legacy disabled preference is ignored without losing saved tab identities',t=>{
+  const raw='{"version":1,"enabled":false,"ids":["c","a"],"active":"a"}',f=fixture({raw});t.after(()=>f.controller.dispose());
+  assert.deepEqual(plain(f.controller.snapshot().ids),['c','a']);assert.equal(f.controller.snapshot().retained,1);assert.equal(f.controller.snapshot().active,'a');
+  assert.equal(f.controller.setEnabled,undefined);assert.equal('enabled' in JSON.parse(f.plugin.serialize(f.plugin.parse(raw))),false);
+});
+test('plugin activation immediately shows tabs even with an old hidden preference',t=>{
+  const f=mounted(dom=>{dom.window.localStorage.getItem=()=>'{"version":1,"enabled":false,"ids":["c","a"],"active":"a"}';});t.after(()=>f.ctx.dispose());
+  assert.equal(f.dom.center.firstChild.hidden,false);assert.equal(f.dom.native.hasAttribute('data-dsh-session-tabs-main'),true);assert.deepEqual(plain(f.window.__dshSessionTabs.snapshot().ids),['c','a']);
+  assert.equal(f.ctx.registrations.length,0);assert.equal(f.window.__dshSessionTabs.enable,undefined);assert.equal(f.plugin.inject.includes('slots'),false);
+  assert.doesNotMatch(source,/ModeToggle|ModeGlyph|dsst-mode-button|sidebar\.footer\.action/);
+});
+test('legacy storage events cannot switch an enabled plugin back to native mode',t=>{
+  const f=mounted();t.after(()=>f.ctx.dispose());f.dom.window.dispatch('storage',{key:f.plugin.storageKey,newValue:'{"version":1,"enabled":false,"ids":["b","a"],"active":"b"}',storageArea:f.dom.window.localStorage});f.dom.flush();
+  assert.equal(f.dom.center.firstChild.hidden,false);assert.equal(f.window.__dshSessionTabs.snapshot().active,'a');assert.deepEqual(plain(f.window.__dshSessionTabs.snapshot().ids),['b','a']);
+  assert.equal(f.calls.some(call=>call[0]==='open'),false);
+});
+test('host disable and re-enable fully restore and reapply the native surface',t=>{
+  let bottom,right;const f=mounted(dom=>{bottom=dom.doc.createElement('button');bottom.setAttribute('data-dsh-bottom-toggle','');right=dom.doc.createElement('button');right.setAttribute('data-sidebar-right-expand','');dom.native.append(bottom,right);});
+  let ctx=f.ctx;t.after(()=>ctx.dispose());
+  for(let cycle=0;cycle<2;cycle++){
+    assert.equal(f.dom.center.firstChild.hidden,false);assert.equal(f.dom.doc.querySelectorAll('[data-dsh-session-tabs]').length,1);ctx.dispose();f.dom.flush();
+    assert.equal(f.dom.doc.querySelectorAll('[data-dsh-session-tabs]').length,0);assert.equal(f.dom.doc.querySelectorAll('[data-plugin="dsh-session-tabs"]').length,0);
+    assert.equal(f.dom.center.hasAttribute('data-dsh-session-tabs-column'),false);assert.equal(f.dom.native.hasAttribute('data-dsh-session-tabs-main'),false);
+    assert.equal(bottom.hasAttribute('data-dsh-session-tabs-native-hidden'),false);assert.equal(right.hasAttribute('data-dsh-session-tabs-native-hidden'),false);assert.equal(f.dom.left.textContent,'native left');assert.equal(f.dom.right.textContent,'native right');
+    assert.equal(f.window.__dshSessionTabs,undefined);assert.equal(f.list.listeners.size,0);assert.ok(f.dom.observers.every(observer=>observer.stopped));assert.ok(f.refs.every(ref=>ref.released));assert.equal(f.list.value.byId.a.retainedBy.mainView,1);
+    ctx=new TestContext(f.services,f.plugin.inject);f.plugin.apply(ctx);f.dom.flush();assert.equal(ctx.registrations.length,0);assert.equal(f.dom.native.hasAttribute('data-dsh-session-tabs-main'),true);
+  }
+});
+test('global panels temporarily restore native sizing without disabling the plugin',()=>{
+  const f=mounted();assert.equal(f.dom.center.firstChild.hidden,false);f.panel.value.activePanelId='settings';f.panel.emit();f.dom.flush();
+  assert.equal(f.dom.center.firstChild.hidden,true);assert.equal(f.dom.native.hasAttribute('data-dsh-session-tabs-main'),false);
+  f.panel.value.activePanelId=null;f.panel.emit();f.dom.flush();assert.equal(f.dom.center.firstChild.hidden,false);assert.equal(f.dom.native.hasAttribute('data-dsh-session-tabs-main'),true);f.ctx.dispose();
 });
 test('own mutations do not schedule an observer-render loop, and keyboard events are IME guarded',()=>{
   const f=mounted(),host=f.dom.center.firstChild,button=host.querySelector('[data-dsst-action="open"]');
@@ -267,12 +296,12 @@ test('restoration stops after a bounded wait when history never grows',()=>{
     assert.equal(f.writes.length,count,'timed-out restoration must not resume itself');assert.equal(f.port.scrollTop,100);
   }finally{f.ctx.dispose();}
 });
-test('switching sessions, native view and disposal cancel outstanding restoration',()=>{
-  for(const action of ['session','native','dispose']){
+test('switching sessions, global panels and disposal cancel outstanding restoration',()=>{
+  for(const action of ['session','global','dispose']){
     const f=scrollScenario({height:600});try{
       f.dom.advance(100);
       if(action==='session')f.open(f.window.__dshSessionTabs.snapshot().ids.find(id=>id!=='a'));
-      else if(action==='native')f.window.__dshSessionTabs.enable(false);
+      else if(action==='global'){f.panel.value.activePanelId='settings';f.panel.emit();f.dom.flush();}
       else f.ctx.dispose();
       f.port.scrollTop=25;f.port.scrollHeight=2000;f.dom.advance(2500);
       assert.equal(f.port.scrollTop,25,action+' must cancel the pending conversation restore');assert.equal(f.dom.timers.size,0);
@@ -294,9 +323,9 @@ test('status, title and selection updates preserve tab nodes and focused control
   assert.equal(host.querySelector('[data-dsst-action="new"]'),plus);assert.equal(host.querySelectorAll('[data-dsst-tab]').length,2);
   f.ctx.dispose();
 });
-test('removing options keeps native fallback and strip-local reopen, with IME guarding',()=>{
+test('strip-local reopen remains IME guarded without extra mode or options controls',()=>{
   const f=mounted(),host=f.dom.center.firstChild,plus=host.querySelector('[data-dsst-action="new"]');
-  assert.equal(host.querySelector('[data-dsst-action="menu"]'),null);assert.equal(f.ctx.registrations[0].meta.id,'dsh-session-tabs:mode');
+  assert.equal(host.querySelector('[data-dsst-action="menu"]'),null);assert.equal(f.ctx.registrations.length,0);
   host.dispatch('click',{target:plus});const id=f.window.__dshSessionTabs.snapshot().active;
   host.dispatch('click',{target:host.querySelectorAll('[data-dsst-action="close"]').find(b=>b.getAttribute('data-dsst-id')===id)});
   assert.equal(f.window.__dshSessionTabs.snapshot().ids.includes(id),false);
@@ -319,8 +348,9 @@ test('top panel controls relay native clicks, track native state and restore ori
   assert.equal(bottom.hasAttribute('data-dsh-session-tabs-native-hidden'),true);assert.notEqual(b.firstChild,bottom.firstChild);
   host.dispatch('click',{target:b});f.dom.flush();assert.equal(bottomClicks,1);assert.equal(b.getAttribute('aria-pressed'),'true');assert.equal(b.getAttribute('aria-label'),'收起底部面板');
   host.dispatch('click',{target:r});assert.equal(rightClicks,1);right.disabled=true;host.dispatch('click',{target:r});assert.equal(rightClicks,1);
-  f.window.__dshSessionTabs.enable(false);assert.equal(bottom.hasAttribute('data-dsh-session-tabs-native-hidden'),false);assert.equal(right.hasAttribute('data-dsh-session-tabs-native-hidden'),false);
-  f.window.__dshSessionTabs.enable(true);f.ctx.dispose();assert.equal(bottom.hasAttribute('data-dsh-session-tabs-native-hidden'),false);assert.equal(right.hasAttribute('data-dsh-session-tabs-native-hidden'),false);
+  f.panel.value.activePanelId='settings';f.panel.emit();f.dom.flush();assert.equal(bottom.hasAttribute('data-dsh-session-tabs-native-hidden'),false);assert.equal(right.hasAttribute('data-dsh-session-tabs-native-hidden'),false);
+  f.panel.value.activePanelId=null;f.panel.emit();f.dom.flush();assert.equal(bottom.hasAttribute('data-dsh-session-tabs-native-hidden'),true);
+  f.ctx.dispose();assert.equal(bottom.hasAttribute('data-dsh-session-tabs-native-hidden'),false);assert.equal(right.hasAttribute('data-dsh-session-tabs-native-hidden'),false);
 });
 test('expanded right sidebar keeps only its native edge toggle and restores the opener after collapse',()=>{
   let expand,collapse,domRef;
@@ -334,8 +364,7 @@ test('expanded right sidebar keeps only its native edge toggle and restores the 
   assert.equal(proxy.hidden,false);host.dispatch('click',{target:proxy});f.dom.flush();
   assert.equal(proxy.hidden,true);assert.equal(collapse.parentElement,domRef.right);assert.equal(collapse.hasAttribute('data-dsh-session-tabs-native-hidden'),false);
   collapse.click();f.dom.observers[0].fn([{target:domRef.native,addedNodes:[expand]}]);f.dom.flush();assert.equal(proxy.hidden,false);
-  f.window.__dshSessionTabs.enable(false);assert.equal(expand.hasAttribute('data-dsh-session-tabs-native-hidden'),false);
-  f.ctx.dispose();assert.equal(collapse.hasAttribute('data-dsh-session-tabs-native-hidden'),false);
+  f.ctx.dispose();assert.equal(expand.hasAttribute('data-dsh-session-tabs-native-hidden'),false);assert.equal(collapse.hasAttribute('data-dsh-session-tabs-native-hidden'),false);
 });
 test('native panel attributes win over a stale opener and update without a tab render delay',()=>{
   let expand,panel;
@@ -426,4 +455,68 @@ test('workspace label and session status updates remain independent',t=>{
   const f=mounted();t.after(()=>f.ctx.dispose());f.workspaces.value.items=[{workspaceId:'mine',title:'项目',sessionIds:['a']}];f.workspaces.emit();
   f.status.value.set('a',{running:true});f.status.emit();f.dom.flush();const select=f.dom.center.firstChild.querySelector('[data-dsst-action="open"]');
   assert.equal(select.title,'项目 / A — 运行中');assert.equal(f.window.__dshSessionTabs.snapshot().rows[0].title,'A');
+});
+function publishSessionEvents(f,id,events,kind='append'){
+  const source=f.events.get(id),entries=events.map(event=>({event}));
+  source.value={entries:kind==='replace'?entries:kind==='prepend'?[...entries,...source.value.entries]:[...source.value.entries,...entries],change:{kind,entries}};source.emit();
+}
+test('terminal turn error outranks completion unread and updates the tab snapshot',t=>{
+  const f=fixture();t.after(()=>f.controller.dispose());f.status.value.set('a',{completionUnread:true});f.status.emit();
+  publishSessionEvents(f,'a',[{type:'turn/end',data:{reason:{kind:'error',error:{message:'provider failed'}}}}]);
+  assert.equal(f.controller.status('a'),'error');assert.equal(f.controller.snapshot().rows[0].status,'error');
+});
+test('PI_AI_ERROR malformed SSE failure shows an error, not completed unread or quoted text',t=>{
+  const f=mounted();t.after(()=>f.ctx.dispose());publishSessionEvents(f,'a',[{type:'assistant/update',data:{text:'PI_AI_ERROR'}}]);
+  assert.equal(f.window.__dshSessionTabs.snapshot().rows[0].status,'idle');
+  f.status.value.set('a',{running:false,completionUnread:true});f.status.emit();
+  publishSessionEvents(f,'a',[{type:'turn/end',data:{reason:{kind:'error',error:{code:'PI_AI_ERROR',message:'Error reading response: malformed server-sent event JSON.'}}}}]);f.dom.flush();
+  const host=f.dom.center.firstChild,dot=host.querySelector('.dsst-dot');
+  assert.equal(f.window.__dshSessionTabs.snapshot().rows[0].status,'error');assert.equal(dot.getAttribute('data-status'),'error');assert.equal(dot.textContent,'×');
+  assert.ok(host.querySelector('[data-dsst-action="open"]').title.endsWith(' — 出现错误'));
+});
+test('pending and running states outrank an older terminal turn error',t=>{
+  const f=fixture();t.after(()=>f.controller.dispose());publishSessionEvents(f,'a',[{type:'turn/end',data:{reason:{kind:'error'}}}]);
+  f.status.value.set('a',{running:true,pendingInteraction:{kind:'approval'}});f.status.emit();assert.equal(f.controller.status('a'),'pending');
+  f.status.value.set('a',{running:true});f.status.emit();assert.equal(f.controller.status('a'),'running');
+  f.status.value.set('a',{running:false});f.status.emit();assert.equal(f.controller.status('a'),'error');
+  f.list.value.byId.a.running=true;f.list.emit();assert.equal(f.controller.status('a'),'running');
+});
+test('turn start and non-error endings clear errors without treating tool failures as terminal',t=>{
+  const f=fixture();t.after(()=>f.controller.dispose());
+  for(const kind of ['aborted','interrupted','max-tokens']){
+    publishSessionEvents(f,'a',[{type:'turn/end',data:{reason:{kind:'error'}}}]);assert.equal(f.controller.status('a'),'error');
+    publishSessionEvents(f,'a',[{type:'turn/start',data:{}}]);assert.equal(f.controller.status('a'),'idle');
+    publishSessionEvents(f,'a',[{type:'turn/end',data:{reason:{kind:'error'}}}]);
+    publishSessionEvents(f,'a',[{type:'turn/end',data:{reason:{kind}}}]);assert.equal(f.controller.status('a'),'idle');
+  }
+  publishSessionEvents(f,'a',[{type:'tool/result',data:{outcome:{kind:'error'}}}]);assert.equal(f.controller.status('a'),'idle');
+});
+test('prepending older failed turns never overrides a newer non-error turn',t=>{
+  const f=fixture();t.after(()=>f.controller.dispose());publishSessionEvents(f,'a',[{type:'turn/start',data:{}},{type:'turn/end',data:{reason:{kind:'aborted'}}}],'replace');
+  publishSessionEvents(f,'a',[{type:'turn/end',data:{reason:{kind:'error'}}}],'prepend');assert.equal(f.controller.status('a'),'idle');
+});
+test('append updates preserve terminal errors without rescanning streaming history',t=>{
+  const f=fixture();t.after(()=>f.controller.dispose());publishSessionEvents(f,'a',[{type:'turn/end',data:{reason:{kind:'error'}}}]);assert.equal(f.controller.status('a'),'error');
+  const source=f.events.get('a');source.value={change:{kind:'append',entries:[{event:{type:'assistant/update',data:{text:'tail'}}}]},get entries(){throw Error('append must not materialize the full history');}};
+  source.emit();assert.equal(f.controller.status('a'),'error');
+});
+test('reopening a tab restores its latest loaded terminal error from the event window',t=>{
+  const f=fixture();t.after(()=>f.controller.dispose());f.controller.open('b');publishSessionEvents(f,'a',[{type:'turn/end',data:{reason:{kind:'error'}}}]);publishSessionEvents(f,'a',[{type:'assistant/update',data:{text:'tail'}}]);
+  assert.equal(f.controller.status('a'),'error');f.controller.close('a');assert.equal(f.events.get('a').listeners.size,0);
+  f.controller.open('a');assert.equal(f.controller.status('a'),'error');assert.equal(f.events.get('a').listeners.size,1);
+});
+test('error observers follow busy-tab retention and are removed on release and disposal',t=>{
+  const f=fixture();t.after(()=>f.controller.dispose());f.controller.open('b');f.status.value.set('a',{running:true});f.status.emit();
+  publishSessionEvents(f,'a',[{type:'turn/end',data:{reason:{kind:'error'}}}]);f.controller.close('a');assert.equal(f.events.get('a').listeners.size,1);
+  f.status.value.set('a',{running:false});f.status.emit();assert.equal(f.events.get('a').listeners.size,0);assert.equal(f.refs.find(ref=>ref.id==='a').released,true);
+  f.controller.dispose();for(const source of f.events.values())assert.equal(source.listeners.size,0);
+});
+test('error glyph, theme color and localized tooltip stay distinct from the close button',t=>{
+  const f=mounted();t.after(()=>f.ctx.dispose());publishSessionEvents(f,'a',[{type:'turn/end',data:{reason:{kind:'error'}}}]);f.dom.flush();
+  const host=f.dom.center.firstChild,dot=host.querySelector('.dsst-dot'),select=host.querySelector('[data-dsst-action="open"]'),close=host.querySelector('[data-dsst-action="close"]');
+  assert.equal(dot.getAttribute('data-status'),'error');assert.equal(dot.textContent,'×');assert.ok(select.title.endsWith(' — 出现错误'));
+  assert.equal(select.getAttribute('aria-label'),select.title);assert.ok(close.title.startsWith('关闭标签: '));assert.notEqual(close,select);
+  assert.match(f.plugin.CSS,/\.dsst-dot\[data-status=error\]\{color:var\(--dsw-alias-state-error-primary\)/);
+  host.dispatch('click',{target:dot});assert.ok(f.window.__dshSessionTabs.snapshot().ids.includes('a'));
+  const english=fixture();t.after(()=>english.controller.dispose());assert.equal(english.controller.words().error,'Error');
 });

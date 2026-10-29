@@ -1,10 +1,22 @@
 # Validation and compatibility / 验证范围
 
+## Plugin lifecycle only (2026-10-29)
+
+All 64 actual-bundle tests pass on Windows. The sidebar mode button, its React/slot dependency, and the internal enable state are removed. Four new cases cover preserving saved tab identities while ignoring the legacy disabled flag, immediate activation with an old hidden preference, cross-window legacy storage events, and repeated host-context disposal/re-application that restores native controls, DOM, styles, observers, and references.
+
+Existing global-page layout handoffs, scroll cancellation, native panel controls, workspace labels, and terminal-error tests remain covered. The real-UI helper now checks for no extra mode button, cleanup-based native restoration, and automatic tab activation after reload rather than calling the removed enable interface. This contribution is repository-only; the helper was syntax-checked but not run against the real GUI, and the installed plugin was not replaced. Earlier version-specific GUI results below are historical evidence only.
+
+## Error status (2026-10-29)
+
+At the error-status checkpoint, all 60 actual-bundle tests passed on Windows. Nine new cases cover terminal turn errors, the screenshot's `PI_AI_ERROR` / malformed server-sent event JSON failure (including precedence over completed unread and ignoring error codes quoted in chat text), status precedence, clearing on new turns and non-error endings, ignoring individual tool failures and older prepended failures, append-only processing without materializing the full event window, restoring loaded errors on reopen, reference-owned subscription cleanup, and the localized red error symbol remaining separate from the close button.
+
+The implementation reads the existing retained reference's `binding.eventSource` and its loaded `entries` / append changes, using `turn/end` with `reason.kind === 'error'`. It does not assume an error field on `uiSession.sessionStatus`, fetch extra history, or change host services. This change is in the Git working tree only; the installed plugin was not replaced, and no real-GUI acceptance was performed for this contribution.
+
 ## Workspace labels (2026-10-29)
 
 Tabs now display the workspace name alongside the session title. All 51 actual-bundle tests pass on Windows, including eight new cases covering authoritative membership rather than matching cwd values, localized default/ungrouped labels, delayed workspace loading, workspace renames and session moves, blank sessions, tooltip/accessibility labels, focus and native-sidebar preservation, literal-text rendering, and independent status updates.
 
-The client bundle matches the locally adapted installed plugin byte-for-byte. This is logic and mock-DOM validation only; real GUI acceptance was not repeated for this contribution. Historical host-version and screenshot results below are not new acceptance evidence for workspace labels.
+For the workspace-label contribution, the client bundle was checked byte-for-byte against the locally adapted installed plugin. That was logic and mock-DOM validation only; real GUI acceptance was not repeated for that contribution. Historical host-version and screenshot results below are not new acceptance evidence for workspace labels.
 
 ## Global-page freeze fix (0.1.6)
 
@@ -27,7 +39,7 @@ Version 0.1.5 targets DSH 0.2.0-rc.2. Windows results below were supplied by the
 
 ## Automated checks
 
-The tests load the actual `lib/client.js` factory with a minimal DOM fixture. They cover loader metadata, lifecycle cleanup, native navigation, draft ownership, closed busy-session retention, storage parsing, cross-window focus, native-view fallback, DOM reuse, panel delegation, hidden retained session headers, delayed native-opener handoffs, workspace membership and localized labels, renames and session moves, and literal-text rendering. Run:
+The tests load the actual `lib/client.js` factory with a minimal DOM fixture. They cover loader metadata, lifecycle cleanup, native navigation, draft ownership, closed busy-session retention, storage parsing, cross-window focus, host plugin disable/re-enable restoration, DOM reuse, panel delegation, hidden retained session headers, delayed native-opener handoffs, workspace membership and localized labels, renames and session moves, and literal-text rendering. Run:
 
 ```sh
 node --test test/verify.mjs
