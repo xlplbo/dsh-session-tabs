@@ -373,3 +373,57 @@ test('native panel sources ignore hidden retained session headers',()=>{
   });
   const host=f.dom.center.firstChild;host.dispatch('click',{target:host.querySelector('[data-dsst-action="right"]')});assert.equal(right,1);assert.equal(wrong,0);f.ctx.dispose();
 });
+test('workspace names follow authoritative session membership, not identical cwd values',t=>{
+  const f=fixture();t.after(()=>f.controller.dispose());
+  f.list.value.byId.a.cwd=f.list.value.byId.b.cwd='D:/shared';
+  f.workspaces.value.items=[{workspaceId:'other',title:'另一个项目',sessionIds:['b']},{workspaceId:'mine',title:'剑网2',sessionIds:['a']}];f.workspaces.emit();
+  const row=f.controller.snapshot().rows.find(row=>row.id==='a');assert.equal(row.workspace,'剑网2');assert.equal(row.title,'A');
+});
+test('unnamed workspace uses the localized default workspace label',t=>{
+  for(const [lang,expected] of [['zh','默认工作区'],['en','Default workspace']]){
+    const f=fixture({lang});t.after(()=>f.controller.dispose());
+    f.workspaces.value.items=[{workspaceId:'default',title:'',sessionIds:['a']}];f.workspaces.emit();
+    assert.equal(f.controller.snapshot().rows[0].workspace,expected);
+  }
+});
+test('ungrouped and not-yet-loaded workspace lists have localized fallback labels',t=>{
+  for(const [lang,expected] of [['zh','未分组'],['en','Ungrouped']]){
+    const f=fixture({lang});t.after(()=>f.controller.dispose());assert.equal(f.controller.snapshot().rows[0].workspace,expected);
+    delete f.workspaces.value.items;f.workspaces.emit();assert.equal(f.controller.snapshot().rows[0].workspace,expected);
+  }
+});
+test('workspace rename and membership changes update labels without navigation or new retains',t=>{
+  const f=fixture();t.after(()=>f.controller.dispose());
+  const first={workspaceId:'first',title:'原工作区',sessionIds:['a']},second={workspaceId:'second',title:'目标工作区',sessionIds:['b']};
+  f.workspaces.value.items=[first,second];f.workspaces.emit();const before=JSON.stringify(f.calls),active=f.controller.snapshot().active;
+  first.title='改名后的工作区';f.workspaces.emit();assert.equal(f.controller.snapshot().rows[0].workspace,'改名后的工作区');
+  first.sessionIds=[];second.sessionIds.push('a');f.workspaces.emit();assert.equal(f.controller.snapshot().rows[0].workspace,'目标工作区');
+  assert.equal(f.controller.snapshot().active,active);assert.equal(JSON.stringify(f.calls),before);
+});
+test('late workspace membership and blank session names resolve independently',t=>{
+  const f=fixture({lang:'zh'});t.after(()=>f.controller.dispose());assert.equal(f.controller.snapshot().rows[0].workspace,'未分组');
+  f.workspaces.value.items=[{workspaceId:'late',title:'后加载的项目',sessionIds:['a']}];f.workspaces.emit();
+  f.list.value.byId.a.blank=true;f.list.emit();const row=f.controller.snapshot().rows[0];assert.equal(row.workspace,'后加载的项目');assert.equal(row.title,'新会话');
+});
+test('actual tab text, tooltip and close label include the workspace and preserve focus',t=>{
+  const f=mounted();t.after(()=>f.ctx.dispose());const workspace={workspaceId:'mine',title:'剑网2',sessionIds:['a']};
+  f.workspaces.value.items=[workspace];f.workspaces.emit();f.dom.flush();const host=f.dom.center.firstChild;
+  const select=host.querySelector('[data-dsst-action="open"]'),close=host.querySelector('[data-dsst-action="close"]');
+  assert.ok(select.textContent.includes('剑网2 / A'));assert.equal(select.title,'剑网2 / A — 空闲');
+  assert.equal(select.getAttribute('aria-label'),select.title);assert.equal(close.title,'关闭标签: 剑网2 / A');
+  select.focus();workspace.title='新名字';f.workspaces.emit();f.dom.flush();
+  assert.equal(host.querySelector('[data-dsst-action="open"]'),select);assert.equal(f.dom.doc.activeElement,select);
+  assert.ok(select.textContent.includes('新名字 / A'));assert.equal(select.title,'新名字 / A — 空闲');
+  assert.equal(f.dom.left.textContent,'native left');assert.equal(f.dom.right.textContent,'native right');
+});
+test('workspace markup is displayed as plain text, never interpreted as HTML',t=>{
+  const f=mounted();t.after(()=>f.ctx.dispose());const name='<img src=x onerror=alert(1)>';
+  f.workspaces.value.items=[{workspaceId:'literal',title:name,sessionIds:['a']}];f.workspaces.emit();f.dom.flush();
+  const host=f.dom.center.firstChild,select=host.querySelector('[data-dsst-action="open"]');
+  assert.ok(select.textContent.includes(name+' / A'));assert.equal(host.querySelectorAll('img').length,0);
+});
+test('workspace label and session status updates remain independent',t=>{
+  const f=mounted();t.after(()=>f.ctx.dispose());f.workspaces.value.items=[{workspaceId:'mine',title:'项目',sessionIds:['a']}];f.workspaces.emit();
+  f.status.value.set('a',{running:true});f.status.emit();f.dom.flush();const select=f.dom.center.firstChild.querySelector('[data-dsst-action="open"]');
+  assert.equal(select.title,'项目 / A — 运行中');assert.equal(f.window.__dshSessionTabs.snapshot().rows[0].title,'A');
+});

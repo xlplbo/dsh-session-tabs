@@ -1,5 +1,11 @@
 # Validation and compatibility / 验证范围
 
+## Workspace labels (2026-10-29)
+
+Tabs now display the workspace name alongside the session title. All 51 actual-bundle tests pass on Windows, including eight new cases covering authoritative membership rather than matching cwd values, localized default/ungrouped labels, delayed workspace loading, workspace renames and session moves, blank sessions, tooltip/accessibility labels, focus and native-sidebar preservation, literal-text rendering, and independent status updates.
+
+The client bundle matches the locally adapted installed plugin byte-for-byte. This is logic and mock-DOM validation only; real GUI acceptance was not repeated for this contribution. Historical host-version and screenshot results below are not new acceptance evidence for workspace labels.
+
 ## Global-page freeze fix (0.1.6)
 
 Version 0.1.6 was checked on 2026-10-15 against DSH 0.2.0-rc.2. It fixes the 0.1.5 tab-strip observer repeatedly remounting a detached chat body when a global page opens. Reassigning the same native hidden attribute can still queue a mutation, so the old feedback loop could prevent the entire renderer from handling input or timers.
@@ -21,7 +27,7 @@ Version 0.1.5 targets DSH 0.2.0-rc.2. Windows results below were supplied by the
 
 ## Automated checks
 
-The tests load the actual `lib/client.js` factory with a minimal DOM fixture. They cover loader metadata, lifecycle cleanup, native navigation, draft ownership, closed busy-session retention, storage parsing, cross-window focus, native-view fallback, DOM reuse, panel delegation, hidden retained session headers and delayed native-opener handoffs. Run:
+The tests load the actual `lib/client.js` factory with a minimal DOM fixture. They cover loader metadata, lifecycle cleanup, native navigation, draft ownership, closed busy-session retention, storage parsing, cross-window focus, native-view fallback, DOM reuse, panel delegation, hidden retained session headers, delayed native-opener handoffs, workspace membership and localized labels, renames and session moves, and literal-text rendering. Run:
 
 ```sh
 node --test test/verify.mjs
